@@ -1,0 +1,70 @@
+[workspace]
+
+[package]
+name = "quay-aggregator-jupiter"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Jupiter `Amm` adapter for the Quay program. Plug-in for routers using `jupiter-amm-interface 0.6`."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# `quay-sdk` is the off-chain SDK (instruction builders, PDAs, zero-copy
+# decoders, swap simulator). It pulls the pricing VM (`quay-vm`) in turn.
+quay-sdk = "0.0.3"
+
+# Jupiter's workspace (jup-ag/jupiter-amm-implementation) pins the modular
+# Solana crates to 2.x via `solana-sdk = ">=2.2"`. We mirror those caps so
+# `jupiter-amm-interface 0.6` doesn't accidentally pull a different major.
+# Pinned to `=0.6.0` (NOT `0.6.1`) — `0.6.1` tightens a transitive range
+# that, paired with `solana-program = "2.1"`, lets Cargo greedily pick
+# `solana-account-decoder 3.x` for jupiter's path. `0.6.0` resolves cleanly
+# on a single 2.x line.
+jupiter-amm-interface = "=0.6.0"
+
+# `solana-program` must match the one re-exported by quay-sdk, otherwise
+# the `Pubkey` / `AccountMeta` types diverge across the crate boundary.
+solana-program = "2.1"
+
+anyhow = "1"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+exit = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+module_name_repetitions = "allow"
+similar_names = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+cast_precision_loss = "allow"
+unreadable_literal = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"
+needless_pass_by_value = "allow"
+items_after_statements = "allow"
+result_large_err = "allow"
+doc_markdown = "allow"
+uninlined_format_args = "allow"
+
+[dev-dependencies]
+# Parity tests (`tests/parity.rs`) decode the litesvm-generated fixtures.
+solana-sdk = "2.2"
+serde_json = "1"
+base64 = "0.22"
