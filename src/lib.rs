@@ -407,7 +407,8 @@ impl Amm for QuayAmm {
     }
 
     fn is_active(&self) -> bool {
-        self.routing_flags & ROUTE_JUPITER != 0
+        let jupiter_routing_enabled = (self.routing_flags & ROUTE_JUPITER) != 0;
+        jupiter_routing_enabled
             && self.cfg_swap_halted == 0
             && self.cfg_protocol_halted == 0
             && self.strategy_frozen == 0
