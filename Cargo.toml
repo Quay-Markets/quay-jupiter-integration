@@ -13,20 +13,25 @@ path = "src/lib.rs"
 [dependencies]
 # `quay-sdk` is the off-chain SDK (instruction builders, PDAs, zero-copy
 # decoders, swap simulator). It pulls the pricing VM (`quay-vm`) in turn.
-quay-sdk = "0.0.4"
+quay-sdk = "0.0.5"
 
-# Jupiter's workspace (jup-ag/jupiter-amm-implementation) pins the modular
-# Solana crates to 2.x via `solana-sdk = ">=2.2"`. We mirror those caps so
-# `jupiter-amm-interface 0.6` doesn't accidentally pull a different major.
-# Pinned to `=0.6.0` (NOT `0.6.1`) — `0.6.1` tightens a transitive range
-# that, paired with `solana-program = "2.1"`, lets Cargo greedily pick
-# `solana-account-decoder 3.x` for jupiter's path. `0.6.0` resolves cleanly
-# on a single 2.x line.
-jupiter-amm-interface = "=0.6.0"
+jupiter-amm-interface = "=0.6.1"
 
 # `solana-program` must match the one re-exported by quay-sdk, otherwise
 # the `Pubkey` / `AccountMeta` types diverge across the crate boundary.
 solana-program = "2.1"
+
+# jupiter-amm-interface 0.6.1 declares its modular Solana deps as `>=2`
+# with no upper bound, so a fresh resolve floats them to 3.x/4.x while
+# `solana-program = "2.1"` keeps our side at 2.x — two majors of the same
+# types, which doesn't compile. Declaring them directly with 2.x caps
+# forces the whole graph onto one 2.x line. Drop these once upstream
+# bounds its ranges.
+solana-account = "2"
+solana-account-decoder = "2"
+solana-clock = "2"
+solana-instruction = "2"
+solana-pubkey = "2"
 
 anyhow = "1"
 

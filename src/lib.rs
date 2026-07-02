@@ -34,6 +34,7 @@ use quay_sdk::ix;
 use quay_sdk::pda::{self, SPL_TOKEN_PROGRAM_ID};
 use quay_sdk::simulate::{simulate_swap_in, SwapSimulationInputs};
 use quay_sdk::state::{GlobalConfig, MarketMakerHeader, StrategyHeader};
+use quay_sdk::TxContext;
 
 /// Account count of the on-chain swap ix when both mints share one token
 /// program: 11 positional accounts (cfg, strategy, mm, quotes, two vaults,
@@ -73,6 +74,13 @@ fn read_mint(account_map: &AccountMap, mint: &Pubkey) -> JupiterResult<(Pubkey, 
 /// owner, so devnet/testnet deploys resolve correctly on their own.
 pub const QUAY_PROGRAM_ID: Pubkey =
     solana_program::pubkey!("QUayE6nexQWYNZAEqfN8FxoNwQDSu3CAzT2qq9J1ArG");
+
+/// Jupiter's mainnet aggregator program id — the top-level program a routed
+/// swap executes under. `quote()` simulates with this entrypoint at CPI
+/// depth 2 so context-gated curves (`EntrypointIs` / `LoadIxDepth`) price
+/// the branch a Jupiter route actually takes.
+pub const JUPITER_ROUTER_ID: Pubkey =
+    solana_program::pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
 
 #[derive(Clone)]
 pub struct QuayAmm {
@@ -278,6 +286,14 @@ impl Amm for QuayAmm {
         let current_slot = self.clock.slot.load(Ordering::Relaxed);
         let current_unix_sec = self.clock.unix_timestamp.load(Ordering::Relaxed);
 
+        // Simulate calling by Jupiter router (top-level ix -> CPI, depth 2).
+        let tx = TxContext {
+            ix_depth: 2,
+            tx_flags: 0,
+            entrypoint_program: JUPITER_ROUTER_ID.to_bytes(),
+            signers: &[],
+        };
+
         // Stack buffer sized to the program's userspace cap, so quoting
         // never allocates, stateful curves included.
         let mut scratch = [0u8; MAX_USERSPACE_LEN as usize];
@@ -294,6 +310,7 @@ impl Amm for QuayAmm {
                 min_amount_out: 0,
                 base_decimals: self.base_decimals,
                 quote_decimals: self.quote_decimals,
+                tx,
             },
             &mut scratch,
         )

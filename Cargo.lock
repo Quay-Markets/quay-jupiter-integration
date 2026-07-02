@@ -1132,18 +1132,20 @@ dependencies = [
 
 [[package]]
 name = "jupiter-amm-interface"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db91d39569a7d9b2b0cd1007075abde274a590e57f8897cde517c6546d098638"
+checksum = "7d3dd68c16cf686d52b907137e4751aa2d6f879fa1ff326a5214768352cf0fab"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
- "borsh 0.10.4",
  "rust_decimal",
  "serde",
  "serde_json",
+ "solana-account",
  "solana-account-decoder",
- "solana-sdk",
+ "solana-clock",
+ "solana-instruction",
+ "solana-pubkey",
 ]
 
 [[package]]
@@ -1528,15 +1530,20 @@ dependencies = [
  "jupiter-amm-interface",
  "quay-sdk",
  "serde_json",
+ "solana-account",
+ "solana-account-decoder",
+ "solana-clock",
+ "solana-instruction",
  "solana-program",
+ "solana-pubkey",
  "solana-sdk",
 ]
 
 [[package]]
 name = "quay-sdk"
-version = "0.0.4"
+version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c938d4ad87cbada35dc1f1890013d453553e67f95067017e9be83d85218f9ac4"
+checksum = "035a78d15c736af3828bc0785f3b6a1852c80c2d2f89740c7db7b722757af9df"
 dependencies = [
  "bytemuck",
  "quay-vm",
@@ -1546,9 +1553,9 @@ dependencies = [
 
 [[package]]
 name = "quay-vm"
-version = "0.0.4"
+version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60eb175f7f7e6325b2ae30a2365ac6f56f9df51d8fdede8bd4ad5298d050e2bf"
+checksum = "21f413e3ecf33524a02928c6d47f0672dd8eae0438a7fb010e65ef17a629a0f5"
 
 [[package]]
 name = "quote"

@@ -20,7 +20,7 @@ use std::str::FromStr;
 use std::sync::atomic::Ordering;
 
 use jupiter_amm_interface::{
-    AccountMap, Amm, AmmContext, ClockRef, KeyedAccount, QuoteParams, SwapMode,
+    AccountMap, Amm, AmmContext, ClockRef, FeeMode, KeyedAccount, QuoteParams, SwapMode,
 };
 use quay_aggregator_jupiter::QuayAmm;
 use solana_sdk::account::Account;
@@ -144,6 +144,8 @@ fn assert_parity(name: &str) {
             input_mint,
             output_mint,
             swap_mode: SwapMode::ExactIn,
+            // Jupiter platform-fee mode; Quay's pricing doesn't depend on it.
+            fee_mode: FeeMode::default(),
         });
 
         match expected_out {
