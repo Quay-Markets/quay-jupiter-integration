@@ -113,15 +113,3 @@ downstream; they are correct in either case.
 ```
 cargo test
 ```
-
-## Dependency notes
-
-`jupiter-amm-interface 0.6.1` declares its modular Solana dependencies
-as `>=2` with no upper bound, so a fresh resolve floats them to 3.x/4.x
-while `solana-program = "2.1"` (required to match `quay-sdk`'s
-re-exported types) keeps our side at 2.x — two majors of the same types,
-which doesn't compile. `Cargo.toml` therefore declares
-`solana-account`, `solana-account-decoder`, `solana-clock`,
-`solana-instruction` and `solana-pubkey` directly with 2.x caps, forcing
-the whole graph onto one 2.x line. Drop those extra dependencies once
-upstream bounds its ranges.
