@@ -109,7 +109,9 @@ fn assert_parity(name: &str) {
 
     let clock_ref = ClockRef::default();
     clock_ref.slot.store(f.clock_slot, Ordering::Relaxed);
-    clock_ref.unix_timestamp.store(f.clock_unix_ts, Ordering::Relaxed);
+    clock_ref
+        .unix_timestamp
+        .store(f.clock_unix_ts, Ordering::Relaxed);
     let ctx = AmmContext { clock_ref };
 
     let keyed = KeyedAccount {
@@ -126,7 +128,10 @@ fn assert_parity(name: &str) {
         map.insert(k, account_of(&k));
     }
     amm.update(&map).expect("update");
-    assert!(amm.is_active(), "fixture {name}: venue inactive after update");
+    assert!(
+        amm.is_active(),
+        "fixture {name}: venue inactive after update"
+    );
 
     for (side, amount_in, expected_out) in &f.swaps {
         let (input_mint, output_mint) = if *side == SIDE_SELL_BASE {
@@ -155,7 +160,10 @@ fn assert_parity(name: &str) {
                      {} but the program paid {out}",
                     q.out_amount
                 );
-                assert_eq!(q.in_amount, *amount_in, "fixture {name}: in_amount mismatch");
+                assert_eq!(
+                    q.in_amount, *amount_in,
+                    "fixture {name}: in_amount mismatch"
+                );
             }
             None => {
                 if let Ok(q) = quote {
@@ -169,6 +177,65 @@ fn assert_parity(name: &str) {
             }
         }
     }
+}
+
+/// A missing or truncated mint account must fail `update()` — quoting with
+/// stale decimals or a wrong token program mis-prices the venue.
+#[test]
+fn update_rejects_missing_or_truncated_mint() {
+    let f = load_fixture("flat");
+    let account_of = |k: &Pubkey| -> Account {
+        f.accounts
+            .iter()
+            .find(|(key, _)| key == k)
+            .unwrap_or_else(|| panic!("fixture flat missing account {k}"))
+            .1
+            .clone()
+    };
+
+    let ctx = AmmContext {
+        clock_ref: ClockRef::default(),
+    };
+    let keyed = KeyedAccount {
+        key: f.strategy,
+        account: account_of(&f.strategy),
+        params: None,
+    };
+    let mut amm = QuayAmm::from_keyed_account(&keyed, &ctx).expect("from_keyed_account");
+
+    let mut map = AccountMap::default();
+    for k in amm.get_accounts_to_update() {
+        map.insert(k, account_of(&k));
+    }
+
+    let mut missing = map.clone();
+    missing.remove(&f.base_mint);
+    assert!(
+        amm.update(&missing).is_err(),
+        "missing base mint must fail update"
+    );
+    // `update()` commits atomically: the failed update above must not have
+    // half-applied the fixture's cleared halt bytes — the warmup lock
+    // (halt defaults from `from_keyed_account`) still holds.
+    assert!(
+        !amm.is_active(),
+        "failed first update must leave the venue inactive"
+    );
+
+    let mut truncated = map.clone();
+    truncated.get_mut(&f.quote_mint).unwrap().data.truncate(10);
+    assert!(
+        amm.update(&truncated).is_err(),
+        "truncated quote mint must fail update"
+    );
+    assert!(
+        !amm.is_active(),
+        "failed update must leave the venue inactive"
+    );
+
+    // The intact map still updates fine afterwards.
+    amm.update(&map).expect("update with full map");
+    assert!(amm.is_active(), "venue active after recovering update");
 }
 
 #[test]

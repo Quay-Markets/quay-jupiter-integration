@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 # `quay-sdk` is the off-chain SDK (instruction builders, PDAs, zero-copy
 # decoders, swap simulator). It pulls the pricing VM (`quay-vm`) in turn.
-quay-sdk = "0.0.3"
+quay-sdk = "0.0.4"
 
 # Jupiter's workspace (jup-ag/jupiter-amm-implementation) pins the modular
 # Solana crates to 2.x via `solana-sdk = ">=2.2"`. We mirror those caps so

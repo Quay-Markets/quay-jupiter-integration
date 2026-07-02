@@ -1534,9 +1534,9 @@ dependencies = [
 
 [[package]]
 name = "quay-sdk"
-version = "0.0.3"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c26e82b72f9ec4ff82ed47d56d140f703a012a9d16cbb356cf6540660e7c7ca5"
+checksum = "c938d4ad87cbada35dc1f1890013d453553e67f95067017e9be83d85218f9ac4"
 dependencies = [
  "bytemuck",
  "quay-vm",
@@ -1546,9 +1546,9 @@ dependencies = [
 
 [[package]]
 name = "quay-vm"
-version = "0.0.3"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1098aa4e316b44b41f123010f9b69abcb4bc192989944d8c4cb5ac9526fff0b9"
+checksum = "60eb175f7f7e6325b2ae30a2365ac6f56f9df51d8fdede8bd4ad5298d050e2bf"
 
 [[package]]
 name = "quote"
