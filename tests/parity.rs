@@ -139,42 +139,49 @@ fn assert_parity(name: &str) {
         } else {
             (f.quote_mint, f.base_mint)
         };
-        let quote = amm.quote(&QuoteParams {
-            amount: *amount_in,
-            input_mint,
-            output_mint,
-            swap_mode: SwapMode::ExactIn,
-            // Jupiter platform-fee mode; Quay's pricing doesn't depend on it.
-            fee_mode: FeeMode::default(),
-        });
+        // Both fee modes are checked against the same on-chain truth. `Ultra`
+        // makes `quote()` simulate with Jupiter's Ultra co-signer in the signer
+        // set; the fixtures' curves don't read `IsSignedBy`, so threading it
+        // must not move a single quote. A fixture whose curve *is* signer-gated
+        // would need its own recorded fill per mode.
+        for fee_mode in [FeeMode::Normal, FeeMode::Ultra] {
+            let quote = amm.quote(&QuoteParams {
+                amount: *amount_in,
+                input_mint,
+                output_mint,
+                swap_mode: SwapMode::ExactIn,
+                fee_mode,
+            });
 
-        match expected_out {
-            Some(out) => {
-                let q = quote.unwrap_or_else(|e| {
-                    panic!(
-                        "fixture {name}: on-chain swap (side {side}, in {amount_in}) paid {out} \
-                         but the adapter refused to quote it: {e}"
-                    )
-                });
-                assert_eq!(
-                    q.out_amount, *out,
-                    "fixture {name}: side {side}, in {amount_in} — adapter quoted \
-                     {} but the program paid {out}",
-                    q.out_amount
-                );
-                assert_eq!(
-                    q.in_amount, *amount_in,
-                    "fixture {name}: in_amount mismatch"
-                );
-            }
-            None => {
-                if let Ok(q) = quote {
+            match expected_out {
+                Some(out) => {
+                    let q = quote.unwrap_or_else(|e| {
+                        panic!(
+                            "fixture {name} ({fee_mode:?}): on-chain swap (side {side}, in \
+                             {amount_in}) paid {out} but the adapter refused to quote it: {e}"
+                        )
+                    });
                     assert_eq!(
-                        q.out_amount, 0,
-                        "fixture {name}: side {side}, in {amount_in} FAILED on-chain but the \
-                         adapter quoted out {} — routers would build doomed transactions",
+                        q.out_amount, *out,
+                        "fixture {name} ({fee_mode:?}): side {side}, in {amount_in} — adapter \
+                         quoted {} but the program paid {out}",
                         q.out_amount
                     );
+                    assert_eq!(
+                        q.in_amount, *amount_in,
+                        "fixture {name} ({fee_mode:?}): in_amount mismatch"
+                    );
+                }
+                None => {
+                    if let Ok(q) = quote {
+                        assert_eq!(
+                            q.out_amount, 0,
+                            "fixture {name} ({fee_mode:?}): side {side}, in {amount_in} FAILED \
+                             on-chain but the adapter quoted out {} — routers would build \
+                             doomed transactions",
+                            q.out_amount
+                        );
+                    }
                 }
             }
         }

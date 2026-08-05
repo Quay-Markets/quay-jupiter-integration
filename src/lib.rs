@@ -24,8 +24,8 @@ use std::sync::atomic::Ordering;
 
 use anyhow::{anyhow, Result as JupiterResult};
 use jupiter_amm_interface::{
-    single_program_amm, try_get_account_data, AccountMap, Amm, AmmContext, KeyedAccount, Quote,
-    QuoteParams, SingleProgramAmm, Swap, SwapAndAccountMetas, SwapMode, SwapParams,
+    single_program_amm, try_get_account_data, AccountMap, Amm, AmmContext, FeeMode, KeyedAccount,
+    Quote, QuoteParams, SingleProgramAmm, Swap, SwapAndAccountMetas, SwapMode, SwapParams,
 };
 use solana_program::pubkey::Pubkey;
 
@@ -81,6 +81,26 @@ pub const QUAY_PROGRAM_ID: Pubkey =
 /// the branch a Jupiter route actually takes.
 pub const JUPITER_ROUTER_ID: Pubkey =
     solana_program::pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
+
+/// Jupiter co-signs the transactions its Ultra API builds with this key
+/// (confirmed by the Jupiter team). It is a real signature, verified by the
+/// runtime, so an on-chain `IsSignedBy` gate reading it cannot be spoofed —
+/// unlike the `jitodontfront…U1tra` sentinel account, which is a plain
+/// read-only meta anyone can attach.
+///
+/// `quote()` puts it in the simulated signer set when the router asks for an
+/// [`FeeMode::Ultra`] quote, so a signer-gated curve prices off-chain the same
+/// branch it takes on-chain.
+///
+/// **The two signals are not equivalent, and the gate must fail safe.** Not
+/// every Ultra transaction carries the co-signer, so a quote taken under
+/// `FeeMode::Ultra` can still settle in a transaction that doesn't have it, and
+/// the on-chain gate then takes the non-Ultra branch. That is harmless only if
+/// the non-Ultra branch pays the taker at least as much. Gate Ultra to the
+/// *tighter* side; giving Ultra a better price than default turns every missing
+/// co-signer into a slippage failure.
+pub const JUPITER_ULTRA_COSIGNER: Pubkey =
+    solana_program::pubkey!("sighWH8KaiT7QhtV4w29ReVF8kG6D5yG3EQP1KYyGVF");
 
 #[derive(Clone)]
 pub struct QuayAmm {
@@ -287,11 +307,23 @@ impl Amm for QuayAmm {
         let current_unix_sec = self.clock.unix_timestamp.load(Ordering::Relaxed);
 
         // Simulate calling by Jupiter router (top-level ix -> CPI, depth 2).
+        //
+        // An Ultra quote carries the Ultra co-signer, matching the signer set
+        // the on-chain `tx_context` gather sees for a transaction Jupiter built
+        // and co-signed. A Normal quote names no signer: the taker signs, but
+        // the router doesn't tell us who that is at quote time, and the swap ix
+        // is the same either way. See [`JUPITER_ULTRA_COSIGNER`] for why the
+        // Ultra branch has to be the tighter one.
+        let ultra_signers = [JUPITER_ULTRA_COSIGNER.to_bytes()];
+        let signers: &[[u8; 32]] = match quote_params.fee_mode {
+            FeeMode::Ultra => &ultra_signers,
+            FeeMode::Normal => &[],
+        };
         let tx = TxContext {
             ix_depth: 2,
             tx_flags: 0,
             entrypoint_program: JUPITER_ROUTER_ID.to_bytes(),
-            signers: &[],
+            signers,
         };
 
         // Stack buffer sized to the program's userspace cap, so quoting
