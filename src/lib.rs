@@ -32,7 +32,7 @@ use solana_program::pubkey::Pubkey;
 use quay_sdk::consts::{MAX_USERSPACE_LEN, ROUTE_JUPITER, SIDE_BUY_BASE, SIDE_SELL_BASE};
 use quay_sdk::ix;
 use quay_sdk::pda::{self, SPL_TOKEN_PROGRAM_ID};
-use quay_sdk::simulate::{simulate_swap_in, SwapSimulationInputs};
+use quay_sdk::simulate::{simulate_swap_in, ExtAccount, SwapSimulationInputs};
 use quay_sdk::state::{GlobalConfig, MarketMakerHeader, StrategyHeader};
 use quay_sdk::TxContext;
 
@@ -44,6 +44,10 @@ const SWAP_ACCOUNTS_LEN_SAME_PROGRAM: usize = 13;
 
 /// A mixed SPL / Token-2022 market appends the second token program.
 const SWAP_ACCOUNTS_LEN_MIXED_PROGRAM: usize = 14;
+
+/// On-chain cap on a strategy's external-account binding
+/// (`quay-program`'s `MAX_EXT_ACCOUNTS`).
+const MAX_EXT_ACCOUNTS: usize = 4;
 
 /// Token program and decimals of a mint, from the account map. A missing
 /// or truncated mint is a hard error: quoting with stale decimals or a
@@ -129,6 +133,12 @@ pub struct QuayAmm {
     /// ix takes them, so they stay in `get_accounts_to_update`.
     vault_base_key: Pubkey,
     vault_quote_key: Pubkey,
+    /// The strategy's bound external accounts (`ext_account_keys`, binding
+    /// order) and their latest data. Empty for unbound strategies. Keys are
+    /// re-derived on every `update`, so owner rebinds propagate on the next
+    /// refresh cycle; until the data arrives, quoting fails closed.
+    ext_keys: Vec<Pubkey>,
+    ext_data: Vec<Vec<u8>>,
     /// `AmmContext.clock_ref`, read at quote time.
     clock: jupiter_amm_interface::ClockRef,
     /// `StrategyHeader.routing_flags`. The venue only surfaces when the
@@ -150,6 +160,24 @@ pub struct QuayAmm {
 // dispatch.
 single_program_amm!(QuayAmm, QUAY_PROGRAM_ID, "Quay");
 
+impl QuayAmm {
+    /// Map an (input, output) mint pair onto Quay's `side` byte, or error
+    /// when the pair doesn't match this strategy.
+    fn side_for(&self, input_mint: &Pubkey, output_mint: &Pubkey) -> JupiterResult<u8> {
+        if *input_mint == self.base_mint && *output_mint == self.quote_mint {
+            Ok(SIDE_SELL_BASE)
+        } else if *input_mint == self.quote_mint && *output_mint == self.base_mint {
+            Ok(SIDE_BUY_BASE)
+        } else {
+            Err(anyhow!(
+                "input/output mints don't match this strategy's pair (base={} quote={})",
+                self.base_mint,
+                self.quote_mint
+            ))
+        }
+    }
+}
+
 impl Amm for QuayAmm {
     fn from_keyed_account(
         keyed_account: &KeyedAccount,
@@ -167,6 +195,12 @@ impl Amm for QuayAmm {
         let (global_config_key, _) = pda::global_config_pda(&program_id);
         let (vault_base_key, _) = pda::vault_pda(&program_id, &mm_key, &base_mint);
         let (vault_quote_key, _) = pda::vault_pda(&program_id, &mm_key, &quote_mint);
+        let ext_keys: Vec<Pubkey> = strategy
+            .ext_account_keys(&keyed_account.account.data)
+            .map_err(|e| anyhow!("decode ext account binding: {e}"))?
+            .iter()
+            .map(|k| Pubkey::new_from_array(*k))
+            .collect();
 
         Ok(Self {
             program_id,
@@ -187,6 +221,9 @@ impl Amm for QuayAmm {
             quote_decimals: 0,
             vault_base_key,
             vault_quote_key,
+            ext_keys,
+            // Fetched on the first update; quoting fails closed until then.
+            ext_data: Vec::new(),
             clock: amm_context.clock_ref.clone(),
             routing_flags: strategy.routing_flags,
             strategy_frozen: strategy.frozen,
@@ -227,30 +264,28 @@ impl Amm for QuayAmm {
             self.base_mint,
             self.quote_mint,
         ]
+        .into_iter()
+        .chain(self.ext_keys.iter().copied())
+        .collect()
     }
 
     fn update(&mut self, account_map: &AccountMap) -> JupiterResult<()> {
+        // Decode everything into locals first; `self` is only written once
+        // every account has resolved, so a failed refresh leaves the
+        // previous snapshot (including the construction-time halts) intact.
         let strategy_data = try_get_account_data(account_map, &self.strategy_key)?.to_vec();
-        let strategy = StrategyHeader::try_from_account(&strategy_data)
+        let strategy = *StrategyHeader::try_from_account(&strategy_data)
             .map_err(|e| anyhow!("decode StrategyHeader on update: {e}"))?;
-        let routing_flags = strategy.routing_flags;
-        let strategy_frozen = strategy.frozen;
-        let strategy_frozen_admin = strategy.frozen_admin;
 
         let mm_data = try_get_account_data(account_map, &self.mm_key)?.to_vec();
-        let mm = MarketMakerHeader::try_from_account(&mm_data)
+        let mm = *MarketMakerHeader::try_from_account(&mm_data)
             .map_err(|e| anyhow!("decode MarketMakerHeader on update: {e}"))?;
-        let mm_frozen = mm.frozen;
-        let mm_frozen_admin = mm.frozen_admin;
-        let mm_halted_admin = mm.halted_admin;
 
         let quotes_data = try_get_account_data(account_map, &self.quotes_key)?.to_vec();
 
         let cfg_data = try_get_account_data(account_map, &self.global_config_key)?.to_vec();
-        let cfg = GlobalConfig::try_from_account(&cfg_data)
+        let cfg = *GlobalConfig::try_from_account(&cfg_data)
             .map_err(|e| anyhow!("decode GlobalConfig on update: {e}"))?;
-        let cfg_swap_halted = cfg.swap_halted;
-        let cfg_protocol_halted = cfg.protocol_halted;
 
         // Vaults aren't priced; just check they were supplied.
         try_get_account_data(account_map, &self.vault_base_key)?;
@@ -259,22 +294,39 @@ impl Amm for QuayAmm {
         let (base_token_program, base_decimals) = read_mint(account_map, &self.base_mint)?;
         let (quote_token_program, quote_decimals) = read_mint(account_map, &self.quote_mint)?;
 
+        // Re-derive the ext binding from the fresh strategy data (owner
+        // rebinds land here), then pull each bound account's data. A key
+        // freshly rebound may miss the map for one cycle — keep the old
+        // data out rather than mis-pairing; quoting fails closed on it.
+        let ext_keys: Vec<Pubkey> = strategy
+            .ext_account_keys(&strategy_data)
+            .map_err(|e| anyhow!("decode ext account binding on update: {e}"))?
+            .iter()
+            .map(|k| Pubkey::new_from_array(*k))
+            .collect();
+        let mut ext_data = Vec::with_capacity(ext_keys.len());
+        for key in &ext_keys {
+            ext_data.push(try_get_account_data(account_map, key)?.to_vec());
+        }
+
         self.strategy_data = strategy_data;
-        self.routing_flags = routing_flags;
-        self.strategy_frozen = strategy_frozen;
-        self.strategy_frozen_admin = strategy_frozen_admin;
+        self.routing_flags = strategy.routing_flags;
+        self.strategy_frozen = strategy.frozen;
+        self.strategy_frozen_admin = strategy.frozen_admin;
         self.mm_data = mm_data;
-        self.mm_frozen = mm_frozen;
-        self.mm_frozen_admin = mm_frozen_admin;
-        self.mm_halted_admin = mm_halted_admin;
+        self.mm_frozen = mm.frozen;
+        self.mm_frozen_admin = mm.frozen_admin;
+        self.mm_halted_admin = mm.halted_admin;
         self.quotes_data = quotes_data;
         self.global_config_data = cfg_data;
-        self.cfg_swap_halted = cfg_swap_halted;
-        self.cfg_protocol_halted = cfg_protocol_halted;
+        self.cfg_swap_halted = cfg.swap_halted;
+        self.cfg_protocol_halted = cfg.protocol_halted;
         self.base_token_program = base_token_program;
         self.base_decimals = base_decimals;
         self.quote_token_program = quote_token_program;
         self.quote_decimals = quote_decimals;
+        self.ext_keys = ext_keys;
+        self.ext_data = ext_data;
 
         Ok(())
     }
@@ -285,21 +337,7 @@ impl Amm for QuayAmm {
             return Err(anyhow!("Quay does not support ExactOut quotes"));
         }
 
-        let side = if quote_params.input_mint == self.base_mint
-            && quote_params.output_mint == self.quote_mint
-        {
-            SIDE_SELL_BASE
-        } else if quote_params.input_mint == self.quote_mint
-            && quote_params.output_mint == self.base_mint
-        {
-            SIDE_BUY_BASE
-        } else {
-            return Err(anyhow!(
-                "input/output mints don't match this strategy's pair (base={} quote={})",
-                self.base_mint,
-                self.quote_mint
-            ));
-        };
+        let side = self.side_for(&quote_params.input_mint, &quote_params.output_mint)?;
 
         // Same clock a real swap would see; the resolver keeps these
         // atomics fresh every slot.
@@ -329,6 +367,19 @@ impl Amm for QuayAmm {
         // Stack buffer sized to the program's userspace cap, so quoting
         // never allocates, stateful curves included.
         let mut scratch = [0u8; MAX_USERSPACE_LEN as usize];
+        // Fixed buffer: the binding is capped at MAX_EXT_ACCOUNTS, and
+        // quote() stays allocation-free. Fewer cached datas than keys
+        // (warmup, rebind lag) surfaces as the simulator's missing-account
+        // error → no quote.
+        let mut ext_buf = [ExtAccount { key: [0u8; 32], data: &[] }; MAX_EXT_ACCOUNTS];
+        let mut ext_n = 0;
+        for (slot, (key, data)) in ext_buf
+            .iter_mut()
+            .zip(self.ext_keys.iter().zip(&self.ext_data))
+        {
+            *slot = ExtAccount { key: key.to_bytes(), data };
+            ext_n += 1;
+        }
         let sim = simulate_swap_in(
             SwapSimulationInputs {
                 strategy_data: &self.strategy_data,
@@ -343,6 +394,8 @@ impl Amm for QuayAmm {
                 base_decimals: self.base_decimals,
                 quote_decimals: self.quote_decimals,
                 tx,
+                last_restart_slot: 0,
+                ext_accounts: &ext_buf[..ext_n],
             },
             &mut scratch,
         )
@@ -379,24 +432,12 @@ impl Amm for QuayAmm {
 
         // The taker's ATAs go to `ix::swap` in (base, quote) order
         // regardless of direction; the builder resolves in/out from `side`.
-        let (taker_ata_base, taker_ata_quote, side) =
-            if *source_mint == self.base_mint && *destination_mint == self.quote_mint {
-                (
-                    *source_token_account,
-                    *destination_token_account,
-                    SIDE_SELL_BASE,
-                )
-            } else if *source_mint == self.quote_mint && *destination_mint == self.base_mint {
-                (
-                    *destination_token_account,
-                    *source_token_account,
-                    SIDE_BUY_BASE,
-                )
-            } else {
-                return Err(anyhow!(
-                    "neither source nor destination mint matches this strategy's pair"
-                ));
-            };
+        let side = self.side_for(source_mint, destination_mint)?;
+        let (taker_ata_base, taker_ata_quote) = if side == SIDE_SELL_BASE {
+            (*source_token_account, *destination_token_account)
+        } else {
+            (*destination_token_account, *source_token_account)
+        };
 
         // Amounts are irrelevant here, only the metas are consumed.
         let metas = ix::swap(
@@ -416,6 +457,14 @@ impl Amm for QuayAmm {
             side,
         )
         .accounts;
+        // Ext accounts are the LAST accounts of the instruction, after the
+        // token program(s), in binding order — the on-chain contract.
+        let metas = metas
+            .into_iter()
+            .chain(self.ext_keys.iter().map(|k| {
+                solana_program::instruction::AccountMeta::new_readonly(*k, false)
+            }))
+            .collect();
 
         Ok(SwapAndAccountMetas {
             // The 0.6 Swap enum has no Quay variant yet; Jupiter patches
@@ -431,11 +480,12 @@ impl Amm for QuayAmm {
         // trailing token-program dedup. Before the first update both
         // programs default to SPL Token, so this reports the same-program
         // count during warmup.
-        if self.base_token_program == self.quote_token_program {
+        let base = if self.base_token_program == self.quote_token_program {
             SWAP_ACCOUNTS_LEN_SAME_PROGRAM
         } else {
             SWAP_ACCOUNTS_LEN_MIXED_PROGRAM
-        }
+        };
+        base + self.ext_keys.len()
     }
 
     fn is_active(&self) -> bool {
@@ -495,6 +545,8 @@ mod tests {
             quote_decimals: 0,
             vault_base_key: zero,
             vault_quote_key: zero,
+            ext_keys: Vec::new(),
+            ext_data: Vec::new(),
             clock: jupiter_amm_interface::ClockRef::default(),
             routing_flags: ROUTE_JUPITER,
             strategy_frozen: 0,

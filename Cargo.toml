@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 # `quay-sdk` is the off-chain SDK (instruction builders, PDAs, zero-copy
 # decoders, swap simulator). It pulls the pricing VM (`quay-vm`) in turn.
-quay-sdk = "0.0.5"
+quay-sdk = "0.0.6"
 
 jupiter-amm-interface = "=0.6.1"
 
