@@ -457,8 +457,10 @@ impl Amm for QuayAmm {
             side,
         )
         .accounts;
-        // Ext accounts are the LAST accounts of the instruction, after the
-        // token program(s), in binding order — the on-chain contract.
+        // Ext accounts go immediately after the token program(s), in
+        // binding order — the program derives that position on-chain from
+        // the mint owners, so the standard 17-byte instruction data the
+        // router encodes is sufficient even for ext-bound strategies.
         let metas = metas
             .into_iter()
             .chain(self.ext_keys.iter().map(|k| {
